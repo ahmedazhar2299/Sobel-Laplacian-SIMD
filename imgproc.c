@@ -405,7 +405,7 @@ Image *ReadPNMImage(char *filename)
     //printf("Complete reading of %d bytes \n", num);
     if (num != size){
         printf("cannot read image data from file");
-        exit(0);
+        // exit(0);
     }
     
     //for(j=0;j<image->num_comment_lines;j++){
