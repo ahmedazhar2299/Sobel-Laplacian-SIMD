@@ -105,13 +105,13 @@ void process_folder_to_pgm_then_run(char *input_dir, char *pgm_output_dir) {
 int TestReadImage(char *file_in, char *file_out)
 {
     Image *image;
-    Image *laplacian;
+    Image *laplacian, *sobel;
     // Image *sobel, *histogram_global, *histogram_local;
     // Image *gama_01, *gama_04, *gama_07, *gama_1;
     char *stem = Extract_Filename_Stem(file_in);
     image = ReadPNMImage(file_in);
     laplacian = Laplacian(image);
-    // sobel = Sobel(image);
+    sobel = Sobel(image);
     // gama_01 = Gamma(image, 0.1);
     // gama_04 = Gamma(image, 0.4);
     // gama_07 = Gamma(image, 0.7);
@@ -124,7 +124,7 @@ int TestReadImage(char *file_in, char *file_out)
     snprintf(filename, sizeof(filename), "%s.pgm", stem);
 
     SavePNMImage(laplacian, filename, "laplacian_pgm", "laplacian_png");
-    // SavePNMImage(sobel, (char*)"sobel.pgm");
+    SavePNMImage(sobel, filename, "sobel_pgm", "sobel_png");
     // SavePNMImage(gama_01, (char*)"gama_01.pgm");
     // SavePNMImage(gama_04, (char*)"gama_04.pgm");
     // SavePNMImage(gama_07, (char*)"gama_07.pgm");

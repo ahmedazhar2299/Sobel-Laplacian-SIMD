@@ -1,4 +1,6 @@
-/laplacian_pgm
-/laplacian_png
-/grayscale_inputs_pgm
+# Ignore any directory with "pgm" or "png" in its name
+*pgm*/
+*png*/
 settings.json
+/images
+.DS_Store
