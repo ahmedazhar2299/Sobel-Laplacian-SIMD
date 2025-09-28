@@ -10,7 +10,7 @@ This project provides a simple image processing tool implementing **Sobel** and 
 brew install imagemagick
 
 # Compile the image processing source code
-clang -O3 -std=c11 imgproc.c -o imgproc
+clang -O3 -std=c11 -arch arm64 imgproc.c -o imgproc
 
 # Run the program
 ./imgproc

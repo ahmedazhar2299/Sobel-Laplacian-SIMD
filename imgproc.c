@@ -10,7 +10,9 @@
 #include <errno.h>
 #include <dirent.h>    
 #include <time.h>  
+#include <arm_neon.h>
 
+double total_time_elapsed = 0.0;
 Image *Laplacian(Image *);
 Image *Sobel(Image *);
 Image *ReadPNMImage(char *);
@@ -24,18 +26,16 @@ double now_seconds(void);
 
 int main(int argc, char **argv)
 {
-    double start = now_seconds();
-
     char *input_dir = (argc > 1) ? argv[1] : "images";
     char *pgm_output_dir = (argc > 2) ? argv[2] : "grayscale_inputs_pgm";
 
     process_folder_to_pgm_then_run(input_dir, pgm_output_dir);
 
-    double end = now_seconds();
+    
     printf("\n###############################\n");
     printf("#                             #\n");
     printf("#                             #\n");
-    printf("### Time elapsed: %.3f s ####\n", end - start);
+    printf("### Time elapsed: %.3f s ####\n", total_time_elapsed);
     printf("#                             #\n");
     printf("#                             #\n");
     printf("###############################\n\n");
@@ -114,7 +114,10 @@ int TestReadImage(char *file_in, char *file_out)
     Image *laplacian, *sobel;
     char *stem = Extract_Filename_Stem(file_in);
     image = ReadPNMImage(file_in);
+    double start = now_seconds();
     laplacian = Laplacian(image);
+    double end = now_seconds();
+    total_time_elapsed += (end - start);
     // sobel = Sobel(image);
     char filename[300];
     snprintf(filename, sizeof(filename), "%s.pgm", stem);
@@ -125,32 +128,265 @@ int TestReadImage(char *file_in, char *file_out)
     return(0);
 }
 
-// Algorithms Code:
+static inline unsigned char clamp_u8_int(int v) {
+    if (v < 0)   return 0;
+    if (v > 255) return 255;
+    return (unsigned char)v;
+}
+
+static inline uint8x16_t load_u8_zeropad_right(const uint8_t *p, int n_rem) {
+    uint8_t tmp[16] = {0};
+    if (n_rem > 0) memcpy(tmp, p, (size_t)n_rem);
+    return vld1q_u8(tmp);
+}
+
 Image *Laplacian(Image *image) {
-    unsigned char *tempin, *tempout;
-    int sum = 0;
-    Image *outimage;
-    outimage = CreateNewImage(image, (char*)"#testing function");
-    tempin = image->data;
-    tempout = outimage->data;
-    
-    for(int i = 0; i < image->Height; i++) {
-        for(int j = 0; j < image->Width; j++) {
-            sum = 0;
-            for(int m = -1; m <= 1; m += 2) {
-                for(int n = -1; n <= 1; n += 2) {
-                    // use boundary check:
-                    sum += boundaryCheck(j + n, i + m, image->Width, image->Height) ? tempin[image->Width * (i + m) + (j + n)] : 0;
-                }
+    const int W = image->Width;
+    const int H = image->Height;
+
+    unsigned char *src = image->data;
+    Image *out = CreateNewImage(image, (char*)"#testing function");
+    unsigned char *dst = out->data;
+
+// --- TOP ROW (y = 0): sum = bottom_left + bottom_right ---
+if (H > 0) {
+    const int y = 0;
+    const uint8_t *rowC = src + y*W;
+    const uint8_t *rowB = (H > 1) ? (src + (y+1)*W) : NULL; // may be NULL if H==1
+    uint8_t *rowO = dst + y*W;
+
+    if (W >= 16 && rowB) {
+        int x = 0;
+
+        // prevB starts as zeros to handle left edge for left-shift-by-1
+        uint8x16_t prevB = vdupq_n_u8(0);
+
+        // process full 16-byte blocks; we also need the next block to build right-shift-by-1
+        for (; x + 16 <= W; x += 16) {
+            // current and next (for right shift); next is zero-padded at the very end
+            uint8x16_t curC = vld1q_u8(rowC + x);
+            uint8x16_t curB = vld1q_u8(rowB + x);
+            uint8x16_t nextB;
+            if (x + 32 <= W) {
+                nextB = vld1q_u8(rowB + x + 16);
+            } else {
+                int rem = W - (x + 16);
+                nextB = load_u8_zeropad_right(rowB + x + 16, rem > 0 ? rem : 0);
             }
-            int temp = tempin[image->Width * i + j] * 4 - sum;
-            // handle excess values:
-            if(temp > 255) temp = 255;
-            if(temp < 0) temp = 0;
-            tempout[image->Width * i + j] = temp;
+
+            // left_b = rowB shifted right by 1: [x-1 .. x+14], pad 0 for x=0 (handled by prevB)
+            uint8x16_t left_b  = vextq_u8(prevB, curB, 15);
+
+            // right_b = rowB shifted left by 1:  [x+1 .. x+16], pad 0 after last pixel (via nextB)
+            uint8x16_t right_b = vextq_u8(curB, nextB, 1);
+
+            // widen to u16 and sum
+            uint8x8_t  lb_lo = vget_low_u8(left_b),  lb_hi = vget_high_u8(left_b);
+            uint8x8_t  rb_lo = vget_low_u8(right_b), rb_hi = vget_high_u8(right_b);
+            uint16x8_t sum_lo = vaddl_u8(lb_lo, rb_lo);
+            uint16x8_t sum_hi = vaddl_u8(lb_hi, rb_hi);
+
+            // 4 * center
+            uint8x8_t  c_lo = vget_low_u8(curC), c_hi = vget_high_u8(curC);
+            uint16x8_t four_c_lo = vshll_n_u8(c_lo, 2);
+            uint16x8_t four_c_hi = vshll_n_u8(c_hi, 2);
+
+            // res = 4c - sum (signed 16) -> clamp -> u8
+            int16x8_t res_lo = vsubq_s16(vreinterpretq_s16_u16(four_c_lo),
+                                         vreinterpretq_s16_u16(sum_lo));
+            int16x8_t res_hi = vsubq_s16(vreinterpretq_s16_u16(four_c_hi),
+                                         vreinterpretq_s16_u16(sum_hi));
+            uint8x8_t out_lo = vqmovun_s16(res_lo);
+            uint8x8_t out_hi = vqmovun_s16(res_hi);
+            uint8x16_t out_px = vcombine_u8(out_lo, out_hi);
+
+            vst1q_u8(rowO + x, out_px);
+
+            // advance prevB for the next block
+            prevB = curB;
+        }
+
+        // tail (scalar) for any leftover pixels
+        for (; x < W; ++x) {
+            int sum = 0;
+            if (x - 1 >= 0) sum += rowB[x - 1];
+            if (x + 1 <  W) sum += rowB[x + 1];
+            int v = 4*rowC[x] - sum;
+            rowO[x] = clamp_u8_int(v);
+        }
+    } else {
+        // scalar fallback (W < 16 or no rowB)
+        for (int x = 0; x < W; ++x) {
+            int sum = 0;
+            if (rowB) {
+                if (x - 1 >= 0) sum += rowB[x - 1];
+                if (x + 1 <  W) sum += rowB[x + 1];
+            }
+            int v = 4*rowC[x] - sum;
+            rowO[x] = clamp_u8_int(v);
         }
     }
-    return (outimage);
+}
+
+if (H > 1) {
+    const int y = H - 1;
+    const uint8_t *rowC = src + y*W;
+    const uint8_t *rowT = src + (y-1)*W;
+    uint8_t *rowO = dst + y*W;
+
+    if (W >= 16) {
+        int x = 0;
+        uint8x16_t prevT = vdupq_n_u8(0);
+
+        for (; x + 16 <= W; x += 16) {
+            uint8x16_t curC = vld1q_u8(rowC + x);
+            uint8x16_t curT = vld1q_u8(rowT + x);
+            uint8x16_t nextT;
+            if (x + 32 <= W) {
+                nextT = vld1q_u8(rowT + x + 16);
+            } else {
+                int rem = W - (x + 16);
+                nextT = load_u8_zeropad_right(rowT + x + 16, rem > 0 ? rem : 0);
+            }
+
+            // top-left  = rowT shifted right by 1
+            // top-right = rowT shifted left  by 1
+            uint8x16_t tl = vextq_u8(prevT, curT, 15);
+            uint8x16_t tr = vextq_u8(curT,  nextT, 1);
+
+            uint8x8_t  tl_lo = vget_low_u8(tl), tl_hi = vget_high_u8(tl);
+            uint8x8_t  tr_lo = vget_low_u8(tr), tr_hi = vget_high_u8(tr);
+            uint16x8_t sum_lo = vaddl_u8(tl_lo, tr_lo);
+            uint16x8_t sum_hi = vaddl_u8(tl_hi, tr_hi);
+
+            uint8x8_t  c_lo = vget_low_u8(curC), c_hi = vget_high_u8(curC);
+            uint16x8_t four_c_lo = vshll_n_u8(c_lo, 2);
+            uint16x8_t four_c_hi = vshll_n_u8(c_hi, 2);
+
+            int16x8_t res_lo = vsubq_s16(vreinterpretq_s16_u16(four_c_lo),
+                                         vreinterpretq_s16_u16(sum_lo));
+            int16x8_t res_hi = vsubq_s16(vreinterpretq_s16_u16(four_c_hi),
+                                         vreinterpretq_s16_u16(sum_hi));
+            uint8x8_t out_lo = vqmovun_s16(res_lo);
+            uint8x8_t out_hi = vqmovun_s16(res_hi);
+            uint8x16_t out_px = vcombine_u8(out_lo, out_hi);
+
+            vst1q_u8(rowO + x, out_px);
+
+            prevT = curT;
+        }
+
+        for (; x < W; ++x) {
+            int sum = 0;
+            if (x - 1 >= 0) sum += rowT[x - 1];
+            if (x + 1 <  W) sum += rowT[x + 1];
+            int v = 4*rowC[x] - sum;
+            rowO[x] = clamp_u8_int(v);
+        }
+    } else {
+        // scalar fallback for narrow rows
+        for (int x = 0; x < W; ++x) {
+            int sum = 0;
+            if (x - 1 >= 0) sum += rowT[x - 1];
+            if (x + 1 <  W) sum += rowT[x + 1];
+            int v = 4*rowC[x] - sum;
+            rowO[x] = clamp_u8_int(v);
+        }
+    }
+}
+
+    // --- SIMD interior rows: y in [1, H-2] ---
+    for (int y = 1; y <= H - 2; ++y) {
+        const unsigned char *rowT = src + (y-1)*W;
+        const unsigned char *rowC = src +  y   *W;
+        const unsigned char *rowB = src + (y+1)*W;
+        unsigned char       *rowO = dst +  y   *W;
+
+        // Left border (x=0) scalar
+        {
+            int x = 0;
+            int sum = 0;
+            if (x-1 >= 0) { sum += rowT[x-1]; sum += rowB[x-1]; }
+            if (x+1 <  W) { sum += rowT[x+1]; sum += rowB[x+1]; }
+            int v = 4*rowC[x] - sum;
+            rowO[x] = clamp_u8_int(v);
+        }
+
+        // SIMD for safe interior: ensure we can read (x-1) .. (x+16) and (x+1) .. (x+17)
+        // That means x runs up to W-18 inclusive (so x+16 <= W-2 and x+1+16 <= W-1)
+        int x = 1;
+        int simd_limit = (W >= 18) ? (W - 18) : 1;
+        for (; x <= simd_limit; x += 16) {
+            // Load centers
+            uint8x16_t c  = vld1q_u8(rowC + x);
+
+            // Load diagonals (unaligned ok on ARM64):
+            // top-left  at x-1 .. x+14
+            // top-right at x+1 .. x+16
+            // bot-left  at x-1 .. x+14
+            // bot-right at x+1 .. x+16
+            uint8x16_t tl = vld1q_u8(rowT + (x - 1));
+            uint8x16_t tr = vld1q_u8(rowT + (x + 1));
+            uint8x16_t bl = vld1q_u8(rowB + (x - 1));
+            uint8x16_t br = vld1q_u8(rowB + (x + 1));
+
+            // Widen to 16-bit
+            uint8x8_t  c_lo  = vget_low_u8(c),   c_hi  = vget_high_u8(c);
+            uint8x8_t  tl_lo = vget_low_u8(tl),  tl_hi = vget_high_u8(tl);
+            uint8x8_t  tr_lo = vget_low_u8(tr),  tr_hi = vget_high_u8(tr);
+            uint8x8_t  bl_lo = vget_low_u8(bl),  bl_hi = vget_high_u8(bl);
+            uint8x8_t  br_lo = vget_low_u8(br),  br_hi = vget_high_u8(br);
+
+            uint16x8_t c16_lo  = vmovl_u8(c_lo);
+            uint16x8_t c16_hi  = vmovl_u8(c_hi);
+            uint16x8_t tl16_lo = vmovl_u8(tl_lo), tl16_hi = vmovl_u8(tl_hi);
+            uint16x8_t tr16_lo = vmovl_u8(tr_lo), tr16_hi = vmovl_u8(tr_hi);
+            uint16x8_t bl16_lo = vmovl_u8(bl_lo), bl16_hi = vmovl_u8(bl_hi);
+            uint16x8_t br16_lo = vmovl_u8(br_lo), br16_hi = vmovl_u8(br_hi);
+
+            // sum of diagonals
+            uint16x8_t sum_lo = vaddq_u16(vaddq_u16(tl16_lo, tr16_lo), vaddq_u16(bl16_lo, br16_lo));
+            uint16x8_t sum_hi = vaddq_u16(vaddq_u16(tl16_hi, tr16_hi), vaddq_u16(bl16_hi, br16_hi));
+
+            // 4 * center
+            uint16x8_t four_c_lo = vshlq_n_u16(c16_lo, 2);
+            uint16x8_t four_c_hi = vshlq_n_u16(c16_hi, 2);
+
+            // res = 4c - sum (in signed 16)
+            int16x8_t res_lo = vsubq_s16(vreinterpretq_s16_u16(four_c_lo),
+                                         vreinterpretq_s16_u16(sum_lo));
+            int16x8_t res_hi = vsubq_s16(vreinterpretq_s16_u16(four_c_hi),
+                                         vreinterpretq_s16_u16(sum_hi));
+
+            // Saturating narrow to u8 (clamp to [0,255])
+            uint8x8_t out_lo = vqmovun_s16(res_lo);
+            uint8x8_t out_hi = vqmovun_s16(res_hi);
+            uint8x16_t out_px = vcombine_u8(out_lo, out_hi);
+
+            vst1q_u8(rowO + x, out_px);
+        }
+
+        // Remaining interior pixels up to W-2 (scalar)
+        for (; x <= W - 2; ++x) {
+            int sum = rowT[x-1] + rowT[x+1] + rowB[x-1] + rowB[x+1];
+            int v = 4*rowC[x] - sum;
+            rowO[x] = clamp_u8_int(v);
+        }
+
+        // Right border (x=W-1) scalar
+        if (W >= 2) {
+            int xb = W - 1;
+            int sum = 0;
+            sum += rowT[xb-1];            // (y-1, x-1)
+            // (y-1, x+1) out of bounds -> +0
+            sum += rowB[xb-1];            // (y+1, x-1)
+            // (y+1, x+1) out of bounds -> +0
+            int v = 4*rowC[xb] - sum;
+            rowO[xb] = clamp_u8_int(v);
+        }
+    }
+
+    return out;
 }
 
 Image *Sobel(Image *image) {
