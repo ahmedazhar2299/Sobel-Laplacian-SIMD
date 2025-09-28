@@ -116,9 +116,9 @@ int TestReadImage(char *file_in, char *file_out)
     image = ReadPNMImage(file_in);
     double start = now_seconds();
     laplacian = Laplacian(image);
+    sobel = Sobel(image);
     double end = now_seconds();
     total_time_elapsed += (end - start);
-    // sobel = Sobel(image);
     char filename[300];
     snprintf(filename, sizeof(filename), "%s.pgm", stem);
 
@@ -390,29 +390,143 @@ if (H > 1) {
 }
 
 Image *Sobel(Image *image) {
-    unsigned char *tempin, *tempout;
-    int index, square[9], temp1, temp2;
-    Image *outimage;
-    outimage = CreateNewImage(image, (char*)"#testing function");
-    tempin = image->data;
-    tempout = outimage->data;
+    const int W = image->Width;
+    const int H = image->Height;
+
+    const uint8_t *src = image->data;
+    Image *out = CreateNewImage(image, (char*)"#Sobel NEON");
+    uint8_t *dst = out->data;
     
-    for(int i = 0; i < image->Height; i++) {
-        for(int j = 0; j < image->Width; j++) {
-            index = 0;
-            // record the values in the 3x3 square:
-            for(int m = -1; m <= 1; m++) {
-                for(int n = -1; n <= 1; n++) {
-                    // use boundary check:
-                    square[index++] = boundaryCheck(j + n, i + m, image->Width, image->Height) ? tempin[image->Width * (i + m) + (j + n)] : 0;
+    for (int y = 0; y < H; ++y) {
+        const uint8_t *rowT = (y > 0)     ? (src + (y-1)*W) : NULL;
+        const uint8_t *rowC =               src +  y   *W;
+        const uint8_t *rowB = (y+1 < H)   ? (src + (y+1)*W) : NULL;
+        uint8_t       *rowO =               dst +  y   *W;
+
+        if (W >= 16) {
+            int x = 0;
+
+            // For vext shifts we need previous & next 16B blocks per row.
+            uint8x16_t prevT = vdupq_n_u8(0), prevC = vdupq_n_u8(0), prevB = vdupq_n_u8(0);
+
+            for (; x + 16 <= W; x += 16) {
+                // current blocks
+                uint8x16_t curT = rowT ? vld1q_u8(rowT + x) : vdupq_n_u8(0);
+                uint8x16_t curC =        vld1q_u8(rowC + x);
+                uint8x16_t curB = rowB ? vld1q_u8(rowB + x) : vdupq_n_u8(0);
+
+                // next blocks (for right shift), zero-padded at image tail
+                uint8x16_t nextT, nextC, nextB;
+                if (x + 32 <= W) {
+                    nextT = rowT ? vld1q_u8(rowT + x + 16) : vdupq_n_u8(0);
+                    nextC =        vld1q_u8(rowC + x + 16);
+                    nextB = rowB ? vld1q_u8(rowB + x + 16) : vdupq_n_u8(0);
+                } else {
+                    int rem = W - (x + 16);
+                    nextT = rowT ? load_u8_zeropad_right(rowT + x + 16, rem > 0 ? rem : 0) : vdupq_n_u8(0);
+                    nextC =        load_u8_zeropad_right(rowC + x + 16, rem > 0 ? rem : 0);
+                    nextB = rowB ? load_u8_zeropad_right(rowB + x + 16, rem > 0 ? rem : 0) : vdupq_n_u8(0);
                 }
+
+                // Left/Right neighbors via shifts
+                // left = shift-right by 1  (uses prev as carry-in)
+                // right= shift-left  by 1  (uses next as carry-in)
+                uint8x16_t lT = vextq_u8(prevT, curT, 15);
+                uint8x16_t rT = vextq_u8(curT,  nextT, 1);
+                uint8x16_t lC = vextq_u8(prevC, curC, 15);
+                uint8x16_t rC = vextq_u8(curC,  nextC, 1);
+                uint8x16_t lB = vextq_u8(prevB, curB, 15);
+                uint8x16_t rB = vextq_u8(curB,  nextB, 1);
+
+                // Widen to s16 (signed) for arithmetic
+                int16x8_t lT_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(lT)));
+                int16x8_t lT_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(lT)));
+                int16x8_t rT_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(rT)));
+                int16x8_t rT_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(rT)));
+
+                int16x8_t lC_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(lC)));
+                int16x8_t lC_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(lC)));
+                int16x8_t rC_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(rC)));
+                int16x8_t rC_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(rC)));
+
+                int16x8_t lB_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(lB)));
+                int16x8_t lB_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(lB)));
+                int16x8_t rB_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(rB)));
+                int16x8_t rB_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(rB)));
+
+                int16x8_t cT_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(curT)));
+                int16x8_t cT_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(curT)));
+                int16x8_t cC_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(curC)));
+                int16x8_t cC_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(curC)));
+                int16x8_t cB_lo = vreinterpretq_s16_u16(vmovl_u8(vget_low_u8(curB)));
+                int16x8_t cB_hi = vreinterpretq_s16_u16(vmovl_u8(vget_high_u8(curB)));
+
+                // Gx = (rT + 2*rC + rB) - (lT + 2*lC + lB)
+                int16x8_t rx_lo = vaddq_s16(vaddq_s16(rT_lo, vshlq_n_s16(rC_lo, 1)), rB_lo);
+                int16x8_t rx_hi = vaddq_s16(vaddq_s16(rT_hi, vshlq_n_s16(rC_hi, 1)), rB_hi);
+                int16x8_t lx_lo = vaddq_s16(vaddq_s16(lT_lo, vshlq_n_s16(lC_lo, 1)), lB_lo);
+                int16x8_t lx_hi = vaddq_s16(vaddq_s16(lT_hi, vshlq_n_s16(lC_hi, 1)), lB_hi);
+                int16x8_t gx_lo = vsubq_s16(rx_lo, lx_lo);
+                int16x8_t gx_hi = vsubq_s16(rx_hi, lx_hi);
+
+                // Gy = (lB + 2*cB + rB) - (lT + 2*cT + rT)
+                int16x8_t by_lo = vaddq_s16(vaddq_s16(lB_lo, vshlq_n_s16(cB_lo, 1)), rB_lo);
+                int16x8_t by_hi = vaddq_s16(vaddq_s16(lB_hi, vshlq_n_s16(cB_hi, 1)), rB_hi);
+                int16x8_t ty_lo = vaddq_s16(vaddq_s16(lT_lo, vshlq_n_s16(cT_lo, 1)), rT_lo);
+                int16x8_t ty_hi = vaddq_s16(vaddq_s16(lT_hi, vshlq_n_s16(cT_hi, 1)), rT_hi);
+                int16x8_t gy_lo = vsubq_s16(by_lo, ty_lo);
+                int16x8_t gy_hi = vsubq_s16(by_hi, ty_hi);
+
+                // L1 magnitude: |gx| + |gy|
+                int16x8_t mag_lo = vqaddq_s16(vabsq_s16(gx_lo), vabsq_s16(gy_lo));
+                int16x8_t mag_hi = vqaddq_s16(vabsq_s16(gx_hi), vabsq_s16(gy_hi));
+
+                // Saturating narrow to u8
+                uint8x8_t out_lo = vqmovun_s16(mag_lo);
+                uint8x8_t out_hi = vqmovun_s16(mag_hi);
+                vst1q_u8(rowO + x, vcombine_u8(out_lo, out_hi));
+
+                // advance previous blocks
+                prevT = curT; prevC = curC; prevB = curB;
             }
-            temp1 = abs(square[2] + 2*square[5] + square[8] - square[0] - 2*square[3] - square[6]);
-            temp2 = abs(square[6] + 2*square[7] + square[8] - square[0] - 2*square[1] - square[2]);
-            tempout[image->Width * i + j] = sqrt(pow(temp1, 2) + pow(temp2, 2));
+
+            // tail (scalar)
+            for (; x < W; ++x) {
+                int tL = (rowT && x-1 >= 0) ? rowT[x-1] : 0;
+                int tC = (rowT) ? rowT[x] : 0;
+                int tR = (rowT && x+1 < W) ? rowT[x+1] : 0;
+                int cL = (x-1 >= 0) ? rowC[x-1] : 0;
+                int cR = (x+1 <  W) ? rowC[x+1] : 0;
+                int bL = (rowB && x-1 >= 0) ? rowB[x-1] : 0;
+                int bC = (rowB) ? rowB[x] : 0;
+                int bR = (rowB && x+1 < W) ? rowB[x+1] : 0;
+
+                int gx = (tR + (cR<<1) + bR) - (tL + (cL<<1) + bL);
+                int gy = (bL + (bC<<1) + bR) - (tL + (tC<<1) + tR);
+                int mag = (gx<0?-gx:gx) + (gy<0?-gy:gy);
+                rowO[x] = clamp_u8_int(mag);
+            }
+        } else {
+            // narrow rows (scalar)
+            for (int x = 0; x < W; ++x) {
+                int tL = (rowT && x-1 >= 0) ? rowT[x-1] : 0;
+                int tC = (rowT) ? rowT[x] : 0;
+                int tR = (rowT && x+1 < W) ? rowT[x+1] : 0;
+                int cL = (x-1 >= 0) ? rowC[x-1] : 0;
+                int cR = (x+1 <  W) ? rowC[x+1] : 0;
+                int bL = (rowB && x-1 >= 0) ? rowB[x-1] : 0;
+                int bC = (rowB) ? rowB[x] : 0;
+                int bR = (rowB && x+1 < W) ? rowB[x+1] : 0;
+
+                int gx = (tR + (cR<<1) + bR) - (tL + (cL<<1) + bL);
+                int gy = (bL + (bC<<1) + bR) - (tL + (tC<<1) + tR);
+                int mag = (gx<0?-gx:gx) + (gy<0?-gy:gy);
+                rowO[x] = clamp_u8_int(mag);
+            }
         }
     }
-    return (outimage);
+
+    return out;
 }
 
 int boundaryCheck(int index_x, int index_y, int width, int height) {
@@ -594,39 +708,71 @@ void SavePNMImage(Image *temp_image, char *filename, char *pgm_directory_name, c
     }
 }
 
+static inline void neon_memset_u8(void *dst, uint8_t val, size_t n) {
+    if (n == 0) return;
+
+    uint8x16_t v = vdupq_n_u8(val);
+
+    uint8_t *p = (uint8_t*)dst;
+    while (n >= 64) {
+        vst1q_u8(p +  0, v);
+        vst1q_u8(p + 16, v);
+        vst1q_u8(p + 32, v);
+        vst1q_u8(p + 48, v);
+        p += 64;
+        n -= 64;
+    }
+    while (n >= 16) {
+        vst1q_u8(p, v);
+        p += 16;
+        n -= 16;
+    }
+    if (n) {
+        memset(p, val, n);
+    }
+}
+
 /*************************************************************************/
 /*Create a New Image with same dimensions as input image*/
 /*************************************************************************/
 
 Image *CreateNewImage(Image * image, char *comment)
 {
-    Image *outimage;
-    int size,j;
-    
-    outimage=(Image *)malloc(sizeof(Image));
-    
+    Image *outimage = (Image *)malloc(sizeof(Image));
+    if (!outimage) {
+        fprintf(stderr, "cannot allocate Image struct\n");
+        exit(1);
+    }
+
     outimage->Type = image->Type;
     outimage->num_comment_lines = image->num_comment_lines;
 
-    if(outimage->Type == GRAY)   size = image->Width * image->Height;
-    if(outimage->Type == COLOR) size  = image->Width * image->Height * 3;
-    outimage->Width = image->Width;
+    int size = 0;
+    if (outimage->Type == GRAY)  size = image->Width * image->Height;
+    if (outimage->Type == COLOR) size = image->Width * image->Height * 3;
+
+    outimage->Width  = image->Width;
     outimage->Height = image->Height;
-    
-    /*--------------------------------------------------------*/
-    /* Copy Comments for Original Image      */
-    for(j=0;j<outimage->num_comment_lines;j++)
-        strcpy(outimage->comments[j],image->comments[j]);
-    
-    /*----------- Add New Comment  ---------------------------*/
-    strcpy(outimage->comments[outimage->num_comment_lines],comment);
-    outimage->num_comment_lines++;
-    
-    
-    outimage->data = (unsigned char *) malloc(size);
-    if (!outimage->data){
-        printf("cannot allocate memory for new image");
-        exit(0);
+
+    // Copy prior comments (strings are short; memcpy/strcpy is already optimal)
+    for (int j = 0; j < outimage->num_comment_lines; j++) {
+        strcpy(outimage->comments[j], image->comments[j]);
     }
-    return(outimage);
+    // Append new comment
+    strcpy(outimage->comments[outimage->num_comment_lines], comment);
+    outimage->num_comment_lines++;
+
+    // 64-byte aligned allocation helps cache and wide stores
+    void *buf = NULL;
+    if (posix_memalign(&buf, 64, (size_t)size) != 0 || !buf) {
+        fprintf(stderr, "cannot allocate memory for new image data\n");
+        free(outimage);
+        exit(1);
+    }
+    outimage->data = (unsigned char*)buf;
+
+    // Fast zero-init with NEON (most predictable “SIMD win” in this function)
+    neon_memset_u8(outimage->data, 0u, (size_t)size);
+
+    return outimage;
 }
