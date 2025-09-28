@@ -8,18 +8,12 @@ This project provides a simple image processing tool implementing **Sobel** and 
 
 ```bash
 brew install imagemagick
-# Convert an image to grayscale .pgm format
-magick pic.jpg -colorspace Gray -depth 8 lena.pgm
 
 # Compile the image processing source code
 clang -O3 -std=c11 imgproc.c -o imgproc
 
 # Run the program
 ./imgproc
-
-# Convert results back to .png format
-magick sobel.pgm sobel.png
-magick laplacian.pgm laplacian.png
 ```
 
 ## References
