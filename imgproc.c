@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <dirent.h>    
+#include <time.h>  
 
 Image *Laplacian(Image *);
 Image *Sobel(Image *);
@@ -22,18 +23,36 @@ int TestReadImage(char *, char *);
 void SavePNMImage(Image *, char *, char*, char*);
 char *Extract_Filename_Stem(char*);
 void process_folder_to_pgm_then_run(char *input_dir, char *pgm_output_dir);
+double now_seconds(void);
 
 int main(int argc, char **argv)
 {
     // Please adjust the input filename and path to suit your needs:
     // char* file_in = (char*)"lena.pgm";
     // char* file_out = (char*)"";
+    double start = now_seconds();
+
     char *input_dir = (argc > 1) ? argv[1] : "images";
     char *pgm_output_dir = (argc > 2) ? argv[2] : "grayscale_inputs_pgm";
-    process_folder_to_pgm_then_run(input_dir, pgm_output_dir);
 
+    process_folder_to_pgm_then_run(input_dir, pgm_output_dir);
     // TestReadImage(file_in, file_out);
+
+    double end = now_seconds();
+    printf("\n###############################\n");
+    printf("#                             #\n");
+    printf("#                             #\n");
+    printf("### Time elapsed: %.3f s ####\n", end - start);
+    printf("#                             #\n");
+    printf("#                             #\n");
+    printf("###############################\n\n");
+
     return(0);
+}
+double now_seconds(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);                 // C11 standard
+    return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
 void ensure_output_dir(const char *dir) {
