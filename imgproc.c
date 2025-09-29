@@ -612,7 +612,7 @@ Image *ReadPNMImage(char *filename)
     num = fread((void *) image->data, 1, (size_t) size, fp);
     if (num != size){
         printf("cannot read image data from file");
-        exit(0);
+        // exit(0);
     }
     
     fclose(fp);

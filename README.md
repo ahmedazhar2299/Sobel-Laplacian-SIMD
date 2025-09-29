@@ -16,6 +16,9 @@ clang -O3 -std=c11 -arch arm64 imgproc.c -o imgproc
 ./imgproc
 ```
 
+## Architecture
+![Architecture](/architecture/simd.png)
+
 ## References
 
 - [Wilson-ZheLin / Introduction-to-Digital-Image-Processing](https://github.com/Wilson-ZheLin/Introduction-to-Digital-Image-Processing/tree/main/4.%20Edge%20Detection%20and%20Grayscale%20Transformation)
