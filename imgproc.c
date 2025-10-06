@@ -12,7 +12,8 @@
 #include <time.h>  
 #include <arm_neon.h>
 
-double total_time_elapsed = 0.0;
+double total_time_program = 0.0;
+double total_time_laplacian = 0.0;
 Image *Laplacian(Image *);
 Image *Sobel(Image *);
 Image *ReadPNMImage(char *);
@@ -28,14 +29,16 @@ int main(int argc, char **argv)
 {
     char *input_dir = (argc > 1) ? argv[1] : "images";
     char *pgm_output_dir = (argc > 2) ? argv[2] : "grayscale_inputs_pgm";
-
+    double start = now_seconds();
     process_folder_to_pgm_then_run(input_dir, pgm_output_dir);
-
+    double end = now_seconds();
+    total_time_program += end - start;
     
     printf("\n###############################\n");
     printf("#                             #\n");
     printf("#                             #\n");
-    printf("### Time elapsed: %.3f s ####\n", total_time_elapsed);
+    printf("### Program time: %.3f s ####\n", total_time_program);
+    printf("# Laplacian operator time: %.3f s #\n", total_time_laplacian);
     printf("#                             #\n");
     printf("#                             #\n");
     printf("###############################\n\n");
@@ -116,9 +119,9 @@ int TestReadImage(char *file_in, char *file_out)
     image = ReadPNMImage(file_in);
     double start = now_seconds();
     laplacian = Laplacian(image);
-    sobel = Sobel(image);
+    // sobel = Sobel(image);
     double end = now_seconds();
-    total_time_elapsed += (end - start);
+    total_time_laplacian += (end - start);
     char filename[300];
     snprintf(filename, sizeof(filename), "%s.pgm", stem);
 
