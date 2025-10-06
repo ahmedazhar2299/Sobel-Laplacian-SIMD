@@ -28,15 +28,11 @@ double now_seconds(void);
 
 int main(int argc, char **argv)
 {
-    // Please adjust the input filename and path to suit your needs:
-    // char* file_in = (char*)"lena.pgm";
-    // char* file_out = (char*)"";
 
     char *input_dir = (argc > 1) ? argv[1] : "images";
     char *pgm_output_dir = (argc > 2) ? argv[2] : "grayscale_inputs_pgm";
 
     process_folder_to_pgm_then_run(input_dir, pgm_output_dir);
-    // TestReadImage(file_in, file_out);
     printf("\n###############################\n");
     printf("#                             #\n");
     printf("#                             #\n");
@@ -49,7 +45,7 @@ int main(int argc, char **argv)
 }
 double now_seconds(void) {
     struct timespec ts;
-    timespec_get(&ts, TIME_UTC);                 // C11 standard
+    timespec_get(&ts, TIME_UTC);                
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
@@ -129,7 +125,7 @@ int TestReadImage(char *file_in, char *file_out)
     image = ReadPNMImage(file_in);
     double start = now_seconds();
     laplacian = Laplacian(image);
-    sobel = Sobel(image);
+    // sobel = Sobel(image);
     double end = now_seconds();
     total_time_elapsed += (end - start);
     // gama_01 = Gamma(image, 0.1);
@@ -144,13 +140,7 @@ int TestReadImage(char *file_in, char *file_out)
     snprintf(filename, sizeof(filename), "%s.pgm", stem);
 
     SavePNMImage(laplacian, filename, "laplacian_pgm", "laplacian_png");
-    SavePNMImage(sobel, filename, "sobel_pgm", "sobel_png");
-    // SavePNMImage(gama_01, (char*)"gama_01.pgm");
-    // SavePNMImage(gama_04, (char*)"gama_04.pgm");
-    // SavePNMImage(gama_07, (char*)"gama_07.pgm");
-    // SavePNMImage(gama_1, (char*)"gama_1.pgm");
-    // SavePNMImage(histogram_global, (char*)"histogram_global.pgm");
-    // SavePNMImage(histogram_local, (char*)"histogram_local.pgm");
+    // SavePNMImage(sobel, filename, "sobel_pgm", "sobel_png");
     free(stem);
     return(0);
 }
@@ -169,12 +159,10 @@ Image *Laplacian(Image *image) {
             sum = 0;
             for(int m = -1; m <= 1; m += 2) {
                 for(int n = -1; n <= 1; n += 2) {
-                    // use boundary check:
                     sum += boundaryCheck(j + n, i + m, image->Width, image->Height) ? tempin[image->Width * (i + m) + (j + n)] : 0;
                 }
             }
             int temp = tempin[image->Width * i + j] * 4 - sum;
-            // handle excess values:
             if(temp > 255) temp = 255;
             if(temp < 0) temp = 0;
             tempout[image->Width * i + j] = temp;
@@ -194,10 +182,8 @@ Image *Sobel(Image *image) {
     for(int i = 0; i < image->Height; i++) {
         for(int j = 0; j < image->Width; j++) {
             index = 0;
-            // record the values in the 3x3 square:
             for(int m = -1; m <= 1; m++) {
                 for(int n = -1; n <= 1; n++) {
-                    // use boundary check:
                     square[index++] = boundaryCheck(j + n, i + m, image->Width, image->Height) ? tempin[image->Width * (i + m) + (j + n)] : 0;
                 }
             }
